@@ -76,20 +76,34 @@ def add_phone(cur, client_id: int, phone: str) -> int:
 	return id
 
 
-def update_client(cur, id: int, first_name: str, last_name: str, email: str) -> int:
+def update_client(cur, id: int, data: dict) -> int:
 	""" Обновляет данные о клиенте в таблице client.
 
 	Входные параметры:
 	cur - курсор подключения к базе данных, объект типа psycopg2.extensions.cursor
 	id - целочисленный id клиента
-	first_name - новое имя клиента. Не допускается длина более 50 (однобайтовых) символов
-	last_name - новая фамилия клиента. Не допускается длина более 50 (однобайтовых) символов
-	email - новая электронная почта клиента
+	data - словарь, ключи которого являются названиями полей, а значения - их новыми данными
+	В словаре могут содержаться следующие данные для обновления:
+		first_name - новое имя клиента. Не допускается длина более 50 (однобайтовых) символов
+		last_name - новая фамилия клиента. Не допускается длина более 50 (однобайтовых) символов
+		email - новая электронная почта клиента
 
 	Возвращаемое значение:
 	В случае успешного обновления данных в таблице client будет возвращен целочисленный id клиента.
 
 	"""
+
+	cur.execute("""
+		SELECT first_name, last_name, email FROM client
+		 WHERE id = %s;
+	""", (id,)
+	)
+
+	old_data = zip(('first_name', 'last_name', 'email'), *cur.fetchall())
+	new_data = []
+	for key, value in old_data:
+		data.setdefault(key, value)
+		new_data.append(data[key])
 
 	cur.execute("""
 		UPDATE client
@@ -98,7 +112,7 @@ def update_client(cur, id: int, first_name: str, last_name: str, email: str) -> 
 		   	   email = %s
 		 WHERE id = %s
 		RETURNING id;
-	""", (first_name, last_name, email, id)
+	""", (*data.values(), id)
 	)
 
 	id = cur.fetchone()[0]
@@ -159,32 +173,40 @@ def delete_client(cur, id: int) -> int:
 	return id
 
 
-def find_client(cur, request: str) -> list:
+def find_client(cur, request: dict) -> list:
 	""" Находит клиента в базе по его данным.
 
 	Входные параметры:
 	cur - курсор подключения к базе данных, объект типа psycopg2.extensions.cursor
-	request - подстрока для поиска клиента
+	request - словарь, в котором ключи - названия полей, по которым производится поиск
+	В словаре могут содержаться следующие поля для поиска:
+		first_name - имя клиента
+		last_name - фамилия клиента
+		email - электронная почта клиента
+		number - телефонный номер клиента
 
 	Возвращаемое значение:
-	Список id клиентов, данные которых содержат подстроку requests.
+	Список id клиентов, которые подходят под условия поиска
 
 	"""
 
-	cur.execute("""
-		SELECT DISTINCT c.id
-		  FROM client c
-		       LEFT JOIN phone_number p
-		       ON p.client_id = c.id
-		 WHERE c.first_name ~* %s
-		    OR c.last_name  ~* %s
-		    OR c.email ~* %s
-		    OR p.number ~* %s;
-	""", (request, request, request, request)
-	)
+	id_sets = []
 
-	id_list = [id[0] for id in cur.fetchall()]
-	return id_list
+	for key, value in request.items():
+		cur.execute("""
+			SELECT DISTINCT c.id
+			  FROM client c
+			       LEFT JOIN phone_number p
+			       ON p.client_id = c.id
+			 WHERE %s ~* %s;
+		""", (AsIs(key), value)
+		)
+
+		id_sets.append(set(id[0] for id in cur.fetchall()))
+
+	id_list = list(set.intersection(*id_sets))
+	
+	return id_list 
 
 
 def print_table(cur, table: str) -> None:
@@ -203,48 +225,52 @@ def print_table(cur, table: str) -> None:
 
 	print(cur.fetchall())
 
+if __name__ == '__main__':
+	
+	with psycopg2.connect(database='netology_db', user='postgres', password='123', host='localhost') as conn:
+		with conn.cursor() as cur:
+			
+			cur.execute("""
+				DROP TABLE phone_number;
+				DROP TABLE client;
+			""")
 
-with psycopg2.connect(database='netology_db', user='postgres', password='123', host='localhost') as conn:
-	with conn.cursor() as cur:
-		
-		cur.execute("""
-			DROP TABLE phone_number;
-			DROP TABLE client;
-		""")
+			create_database(cur)
+			conn.commit()
+			
+			id1 = add_client(cur, 'Petya', 'Petrov', 'petrusha@inbox.com')
+			id2 = add_client(cur, 'Vasya', 'Vasilyev', 'vasyandr@inbox.com')
 
-		create_database(cur)
-		conn.commit()
-		
-		id1 = add_client(cur, 'Petya', 'Petrov', 'petrusha@inbox.com')
-		id2 = add_client(cur, 'Vasya', 'Vasilyev', 'vasyandr@inbox.com')
+			add_phone(cur, id1, '123')
+			add_phone(cur, id1, '321')
+			add_phone(cur, id2, '6543')
+			add_phone(cur, id2, '456')
 
-		add_phone(cur, id1, '123')
-		add_phone(cur, id1, '321')
-		add_phone(cur, id2, '6543')
-		add_phone(cur, id2, '456')
+			print_table(cur, 'client')
+			print_table(cur, 'phone_number')
+			new_data = {'first_name': 'Petrusha', 'last_name': 'Petroff'}
+			update_client(cur, id1, new_data)
+			print('\nafter update client\n')
+			print_table(cur, 'client')
 
-		print_table(cur, 'client')
-		print_table(cur, 'phone_number')
-		update_client(cur, id1, 'Petrusha', 'Petroff', 'petrusha@inbox.com')
-		print('\nafter update client\n')
-		print_table(cur, 'client')
+			delete_phone(cur, id2, '456')
+			print('\nafter phone delete\n')
+			print_table(cur, 'phone_number')
+			
+			print("\nsearch for 'as'\n")
+			search_dict1 = {'first_name': 'as'}
+			print(find_client(cur, search_dict1))
 
-		delete_phone(cur, id2, '456')
-		print('\nafter phone delete\n')
-		print_table(cur, 'phone_number')
-		
-		print("\nsearch for 'as'\n")
-		print(find_client(cur, 'as'))
+			print("\nsearch for '3'\n")
+			search_dict2 = {'number': '3'}
+			print(find_client(cur, search_dict2))
 
-		print("\nsearch for '3'\n")
-		print(find_client(cur, '3'))
-
-		delete_client(cur, id1)
-		delete_client(cur, id2)
-		print('\nempty client table\n')
-		print_table(cur, 'client')
-		print('\nempty phone table\n')
-		print_table(cur, 'phone_number')
+			delete_client(cur, id1)
+			delete_client(cur, id2)
+			print('\nempty client table\n')
+			print_table(cur, 'client')
+			print('\nempty phone table\n')
+			print_table(cur, 'phone_number')
 
 
 
